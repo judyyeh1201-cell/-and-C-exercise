@@ -10,16 +10,30 @@ DATA_FILE = "exercise_log.csv"
 # 設定頁面
 st.set_page_config(page_title="兒童運動獎勵表", page_icon="🏆")
 
-# --- 1. 資料處理函數 ---
+# --- 1. 資料處理函數 (已修正防呆) ---
 def load_data():
+    # 如果檔案不存在，直接回傳空表格
     if not os.path.exists(DATA_FILE):
         return pd.DataFrame(columns=["Date", "Child", "Activity", "Note", "Week_Start"])
-    df = pd.read_csv(DATA_FILE)
-    # 確保日期欄位格式正確
-    if not df.empty:
-        df["Date"] = pd.to_datetime(df["Date"]).dt.date
-        df["Week_Start"] = pd.to_datetime(df["Week_Start"]).dt.date
-    return df
+    
+    try:
+        df = pd.read_csv(DATA_FILE)
+        
+        # 如果讀進來是空的，也回傳空表格
+        if df.empty:
+            return pd.DataFrame(columns=["Date", "Child", "Activity", "Note", "Week_Start"])
+
+        # 強制轉換日期格式 (如果格式錯誤，會變成 NaT)
+        df["Date"] = pd.to_datetime(df["Date"], errors='coerce').dt.date
+        df["Week_Start"] = pd.to_datetime(df["Week_Start"], errors='coerce').dt.date
+        
+        # 把轉換失敗的壞資料濾掉，避免報錯
+        df = df.dropna(subset=["Date", "Week_Start"])
+        
+        return df
+    except Exception:
+        # 如果檔案真的壞到讀不出來，就重置一個新的
+        return pd.DataFrame(columns=["Date", "Child", "Activity", "Note", "Week_Start"])
 
 def save_data(df):
     df.to_csv(DATA_FILE, index=False)
@@ -31,7 +45,7 @@ def get_week_start(date_obj):
 
 # --- 2. 介面標題 ---
 st.title("🏆 兒童每週運動挑戰賽 (V2)")
-st.write(f"📅 挑戰起始日：{START_DATE} (每週一結算)")
+st.caption(f"📅 挑戰起始日：{START_DATE} (每週一結算)")
 
 # 建立分頁 (Tab)
 tab1, tab2 = st.tabs(["📝 紀錄運動", "🛠️ 管理紀錄 (修改/刪除)"])
@@ -70,7 +84,6 @@ with tab1:
                     "Note": [note],
                     "Week_Start": [week_start]
                 })
-                # 使用 concat 來合併
                 df = pd.concat([df, new_entry], ignore_index=True)
                 save_data(df)
                 st.success(f"{avatar} 紀錄成功！")
@@ -82,11 +95,12 @@ with tab1:
     if not df.empty:
         # 計算本週數據
         current_week_start = get_week_start(datetime.now().date())
+        # 確保比較時格式一致
         this_week_data = df[(df["Child"] == user) & (df["Week_Start"] == current_week_start)]
         count = len(this_week_data)
         
         st.subheader(f"💰 {user} 本週成績")
-        st.write(f"本週累積次數： **{count} 次**")
+        st.write(f"本週 ({current_week_start}) 累積次數： **{count} 次**")
         
         if count >= 5:
             st.balloons()
@@ -104,36 +118,31 @@ with tab1:
 # --- Tab 2: 管理區 (Excel 模式) ---
 with tab2:
     st.subheader("🛠️ 資料管理後台")
-    st.write("如果你輸入錯誤，可以在下方表格直接修改，或者勾選左邊刪除整行。")
+    st.write("直接在表格上修改，或勾選左側刪除整行。")
     
-    # 讀取資料
     df_all = load_data()
     
-    if not df_all.empty:
-        # 顯示可編輯的表格 (Data Editor)
-        edited_df = st.data_editor(
-            df_all,
-            num_rows="dynamic",  # 允許增加或刪除行
-            use_container_width=True,
-            key="editor",
-            # 設定欄位格式
-            column_config={
-                "Date": st.column_config.DateColumn("日期"),
-                "Child": st.column_config.SelectboxColumn("小孩", options=["Jacqueline", "Cheryl"]),
-                "Activity": st.column_config.TextColumn("項目"),
-                "Note": st.column_config.TextColumn("備註"),
-                "Week_Start": st.column_config.DateColumn("週次起始日(自動)", disabled=True) 
-            }
-        )
-        
-        # 儲存按鈕
-        if st.button("💾 儲存修改"):
-            # 重新計算 Week_Start 以防日期被修改後週次沒更新
+    # 這裡做了修改，確保不會因為空資料而報錯
+    edited_df = st.data_editor(
+        df_all,
+        num_rows="dynamic",
+        use_container_width=True,
+        key="editor",
+        column_config={
+            "Date": st.column_config.DateColumn("日期", format="YYYY-MM-DD"),
+            "Child": st.column_config.SelectboxColumn("小孩", options=["Jacqueline", "Cheryl"]),
+            "Activity": st.column_config.TextColumn("項目"),
+            "Note": st.column_config.TextColumn("備註"),
+            "Week_Start": st.column_config.DateColumn("週次起始日", disabled=True) 
+        }
+    )
+    
+    if st.button("💾 儲存修改"):
+        # 重新計算 Week_Start 以防日期被修改後週次沒更新
+        if not edited_df.empty:
             edited_df["Date"] = pd.to_datetime(edited_df["Date"]).dt.date
             edited_df["Week_Start"] = edited_df["Date"].apply(get_week_start)
-            
-            save_data(edited_df)
-            st.success("資料已更新！")
-            st.rerun()
-    else:
-        st.info("目前沒有資料可以修改。")
+        
+        save_data(edited_df)
+        st.success("資料已更新！")
+        st.rerun()
